@@ -2,143 +2,187 @@ const Ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs/promises');
 const extractFrames = require('ffmpeg-extract-frames');
 var path = require('path');
-const logger = require('./logger');
+import { log } from 'console';
+import logger from './logger.js';
 const { exec } = require('child_process');
 const sharp = require('sharp');
+const { promisify } = require('util');
+const execAsync = promisify(exec);
 
-const videoDirectory = '/mnt/e/test';
-const outputDirectory = '/mnt/e/previews'; 
+const videoDirectory = '/mnt/f';
+const screenshotOutputDirectory = '/mnt/c/git/pron/screenshots';
+const previewOutputDirectory = '/mnt/c/git/pron/previews';
 const framesPerVideo = 16;
 
 async function processVideos() {
+    logger.info('Processing videos...');
     let files = await fs.readdir(videoDirectory);
-    for (const file of files) {
-        await checkIfFileIsProcessed(file);
-        await sleep(2000);
-    }
-}
-
-async function extractImages() {
-    let files = fs.readdirSync(videoDirectory);
-
-    for (const file of files) {
-        await checkIfFileIsProcessed(file);
-        logger.debug(`Processing file: ${file}`);
-        let length = await getVideoLength(`${videoDirectory}/${file}`); 
-        logger.debug(`Video length: ${length}`);
-        let offsets = buildOffsetsList(length);
-        logger.debug(`Offsets: ${offsets}`);
-        let outputFiles = [];
-
-
-        for (const offset of offsets) {
-            const outputPath = `${outputDirectory}/${file}_${offset}.jpg`;
-            outputFiles.push(outputPath);
-            // const command = `ffmpeg -ss ${offset} -i ${videoDirectory}/${file} -frames:v 1 ${outputPath}`;   
-            // await executeCommand(command);
+    const mp4Files = files.filter(file => file.endsWith('.mp4'));
+    for (const file of mp4Files) {
+        let isFileProcessed = await checkIfFileIsProcessed(file);
+        if (isFileProcessed) {
+            continue;
+        } else {
+            await processFile(file);
         }
-        let fileObj = {
-            file: file,
-            screenshots: outputFiles,
-            categories: []
-        };
-        await processFile(fileObj);
-        // makeImageGrid(outputFiles, outputDirectory)
     }
 }
 
 async function processFile(file) {
-    logger.debug(`Processing file: ${file.file}`);
+    const cleanFile = removeFileExtension(file);
+    logger.info(`Processing file: ${file}`);
+
+    let length = await getVideoLength(`${videoDirectory}/${file}`); 
+
+    let offsets = buildOffsetsList(length);
+
+    let screenshotPaths = await getVideoScreenshots(offsets, cleanFile);
+    let imageDimensions = await getImageDimensions(screenshotPaths[0]);
+    let previewPath = await getVideoPreview(screenshotPaths, cleanFile, imageDimensions);
+
+    buildAndAddFileObject(file, screenshotPaths, previewPath);
+}
+
+async function buildAndAddFileObject(file, screenshotPaths, previewPath) {
+    try {
+        let processedFiles = await getProcessedFilesObject();
+
+        let fileObj = {
+            file: file,
+            screenshots: screenshotPaths,
+            preview: previewPath,
+            categories: []
+        };
+
+        processedFiles.processedFiles[file] = fileObj;
+
+        logger.debug(`Added file object for ${file}: ${fileObj}`);
+
+        await fs.writeFile('processed_files.json', JSON.stringify(processedFiles, null, 2), 'utf8');
+    } catch (error) {
+        console.error('Failed to update processed files:', error);
+    }
+}
+
+async function getProcessedFilesObject() {
+    let json = {};
+    try {
+        let data = await fs.readFile('processed_files.json', 'utf8');
+        if (!data) {
+            await fs.writeFile('processed_files.json', JSON.stringify({ processedFiles: {} }));
+            data = '{ "processedFiles": {} }'; 
+            logger.debug(`Initialized processed files object: ${data}`);
+        }
+        json = JSON.parse(data);
+        logger.debug("Found processedFiles object: ", json.processedFiles); 
+    } catch (err) {
+        await fs.writeFile('processed_files.json', JSON.stringify({ processedFiles: {} }));
+        console.error('Error processing the JSON file:', err);
+    }
+    return json;
+}
+
+async function getVideoScreenshots(offsets, file) {
+    let screenshots = [];
+    for (const offset of offsets) {
+        const outputPath = `${screenshotOutputDirectory}/${file}_${offset}.jpg`;
+        screenshots.push(outputPath);
+        const command = `ffmpeg -ss ${offset} -i ${videoDirectory}/${file}.mp4 -frames:v 1 ${outputPath}`;
+        logger.debug(`Executing command: ${command}`);
+        await execAsync(command, { maxBuffer: 1024 * 1024 * 100 });
+    }
+    logger.debug(`Screenshots for ${file}: ${screenshots}`);
+    return screenshots;
+}
+
+function getImageDimensions(imagePath) {
+    return sharp(imagePath)
+        .metadata()
+        .then(metadata => {
+            logger.debug(`Image dimensions: ${metadata.width}x${metadata.height}`);
+            return {
+                width: metadata.width,
+                height: metadata.height
+            };
+        })
+        .catch(err => {
+            console.error('Error retrieving image metadata:', err);
+            throw err;
+        });
+}
+
+function getVideoPreview(imagePaths, file, imageDimensions) {
+    const originalWidth = imageDimensions.width; // Original width of the images
+    const cropWidth = originalWidth / 2; // Crop to the left half
+    const height = 500;  // Height of each image in the grid after cropping and resizing
+    const width = 500;  // Width of each image in the grid after cropping and resizing
+    const gridWidth = 4; // Number of images per row
+    const outputPath = `${previewOutputDirectory}/${file}_preview.png`; // Path to save the generated grid
+    logger.info(`Generating preview for ${file}...`);
+    logger.debug(`Preview for ${file} will be saved at: ${outputPath}`);
+
+    const imagePromises = imagePaths.map(path =>
+        sharp(path)
+            .extract({ width: cropWidth, height: imageDimensions.height, left: 0, top: 0 }) // Crop to the left half
+            .resize(width, height) // Resize the cropped image
+            .toBuffer()
+    );
+
+    return Promise.all(imagePromises)
+        .then(images => {
+            const compositeOptions = images.map((img, index) => {
+                const row = Math.floor(index / gridWidth);
+                const col = index % gridWidth;
+                return {
+                    input: img,
+                    left: col * width,
+                    top: row * height
+                };
+            });
+
+            return sharp({
+                create: {
+                    width: width * gridWidth,
+                    height: height * gridWidth,
+                    channels: 4,
+                    background: { r: 255, g: 255, b: 255, alpha: 1 }
+                }
+            })
+            .composite(compositeOptions)
+            .toFile(outputPath);
+        })
+        .then(() => outputPath) // Return the path to the generated image
+        .catch(err => {
+            console.error('Error creating grid image:', err);
+            throw err; // Propagate error if something goes wrong
+        });
+}
+
+function removeFileExtension(filename) {
+    const lastIndex = filename.lastIndexOf('.');
+    
+    // Check if there is a period and it's not at the start of the filename
+    if (lastIndex > 0) {
+        return filename.slice(0, lastIndex);
+    }
+    
+    // Return the original filename if no period was found, or it was at the start
+    return filename;
 }
 
 async function checkIfFileIsProcessed(file) {
-    logger.debug(`Checking if file is processed: ${file}`);
-    await fs.readFile('processed_files.json').then(buffer => {
-        const data = buffer.toString('utf8');
-        if (!data) {
-            logger.debug('JSON file is empty. Initializing with default structure.');
-            fs.writeFile('processed_files.json', JSON.stringify({ processedFiles: {} }));
-            data = '{}';
+    let object = await getProcessedFilesObject();
+    let processedFiles = object.processedFiles;
+    for (const key in processedFiles) {
+        if (processedFiles.hasOwnProperty(key)) {
+          if (key === file) {
+            logger.info(`File ${file} is already processed. Skipping...`);
+            return true;
+          }
         }
-        const json = JSON.parse(data);
-        logger.debug('JSON file contents:', json);
-    }).catch(err => {
-        console.log('Error reading or writing JSON file:', err);
-    });
-}
-
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function executeCommand(command) {
-    try {
-        const {stdout, stderr } = await execPromisify(command);
-        if (stderr) {
-            console.error('stderr:', stderr);
-        }
-        await checkFileExists(outputPath);
-    } catch (error) {
-        
     }
-}
-
-async function checkFileExists(filePath) {
-    try {
-        await fs.access(filePath);
-        logger.debug(`File exists at ${filePath}`);
-    } catch (error) {
-        console.error(`File does not exist at ${filePath}:`, error);
-    }
-}
-
-async function makeImageGrid(imagePaths, outputDirectory) {
-    let outputFilesLength = fs.readdirSync(outputDirectory).length;
-    logger.debug(`Output files length: ${outputFilesLength}`);
-    // await while (files.length !== framesPerVideo) {
-        
-    // }
-    // if (imagePaths.length !== 16) {
-    //     throw new Error('Exactly 16 image paths are required.');
-    // }
-
-    // const imageWidth = 200; // Width of each image in the grid
-    // const imageHeight = 200; // Height of each image in the grid
-    // const gridWidth = 4; // Number of images per row
-
-    // // Load all images and resize them
-    // const images = await Promise.all(
-    //     imagePaths.map(path => sharp(path).resize(imageWidth, imageHeight).toBuffer())
-    // );
-
-    // // Create a blank image to hold the grid
-    // const grid = sharp({
-    //     create: {
-    //         width: imageWidth * gridWidth,
-    //         height: imageHeight * gridWidth,
-    //         channels: 4,
-    //         background: { r: 255, g: 255, b: 255, alpha: 1 } // white background
-    //     }
-    // });
-
-    // // Composite images onto the blank grid
-    // const composite = [];
-    // images.forEach((img, index) => {
-    //     const x = (index % gridWidth) * imageWidth;
-    //     const y = Math.floor(index / gridWidth) * imageHeight;
-    //     composite.push({
-    //         input: img,
-    //         top: y,
-    //         left: x
-    //     });
-    // });
-
-    // // Combine the images on the grid and save the output
-    // await grid
-    //     .composite(composite)
-    //     .toFile(outputFilePath);
-
-    // console.log('Grid image created successfully:', outputFilePath);
+    logger.info(`File ${file} is not processed. Processing...`);
+    return false;
 }
 
 function setCategories(videoPath, categories) {
@@ -156,6 +200,7 @@ function getVideoLength(videoPath) {
                 reject(err);
             } else {
                 let length = metadata.format.duration;
+                logger.debug(`Video length: ${length}`);
                 resolve(length);
             }
         });
@@ -168,7 +213,9 @@ function buildOffsetsList(length) {
     for (let i = 1; i < framesPerVideo + 1; i++) {
         offsets.push(i * increment);
     }
+    logger.debug(`Offsets: ${offsets}`);
     return offsets;
 }
 
+// checkIfFileIsProcessed('a_lasting_impression_newts_HD__p_badoinkvr__180_lr.mp4');
 processVideos();

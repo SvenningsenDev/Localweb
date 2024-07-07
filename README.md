@@ -9,7 +9,7 @@ bun install
 To run:
 
 ```bash
-bun run fileHandler.js
+bun main.js
 ```
 
 This project was created using `bun init` in bun v1.1.16. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.

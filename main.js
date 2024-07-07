@@ -9,9 +9,9 @@ const sharp = require('sharp');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
 
-const videoDirectory = '/mnt/f';
-const screenshotOutputDirectory = '/mnt/c/git/LocalWeb/screenshots';
-const previewOutputDirectory = '/mnt/c/git/LocalWeb/previews';
+const videoDirectory = '/mnt/c/Users/bucha/Videos';
+const screenshotOutputDirectory = '/mnt/c/git/LocalWeb/cs_screenshots';
+const previewOutputDirectory = '/mnt/c/git/LocalWeb/cs_previews';
 const framesPerVideo = 16;
 
 async function processVideos() {
@@ -112,10 +112,15 @@ function getImageDimensions(imagePath) {
 }
 
 function getVideoPreview(imagePaths, file, imageDimensions) {
+    let height = imageDimensions.height;
+    let width = imageDimensions.width;
     const originalWidth = imageDimensions.width; // Original width of the images
-    const cropWidth = originalWidth / 2; // Crop to the left half
-    const height = 500;  // Height of each image in the grid after cropping and resizing
-    const width = 500;  // Width of each image in the grid after cropping and resizing
+    let usedWidth = originalWidth;
+    if (imageDimensions.width == imageDimensions.height * 2) {
+        usedWidth = originalWidth / 2;
+        height = 1000;
+        width = 1000;
+    }
     const gridWidth = 4; // Number of images per row
     const outputPath = `${previewOutputDirectory}/${file}_preview.png`; // Path to save the generated grid
     logger.info(`Generating preview for ${file}...`);
@@ -123,7 +128,7 @@ function getVideoPreview(imagePaths, file, imageDimensions) {
 
     const imagePromises = imagePaths.map(path =>
         sharp(path)
-            .extract({ width: cropWidth, height: imageDimensions.height, left: 0, top: 0 }) // Crop to the left half
+            .extract({ width: usedWidth, height: imageDimensions.height, left: 0, top: 0 }) // Crop to the left half
             .resize(width, height) // Resize the cropped image
             .toBuffer()
     );
@@ -210,12 +215,24 @@ function getVideoLength(videoPath) {
 function buildOffsetsList(length) {
     let offsets = [];
     let increment = Math.floor(length / framesPerVideo);
-    for (let i = 1; i < framesPerVideo + 1; i++) {
-        offsets.push(i * increment);
+
+    if (length < framesPerVideo) {
+        logger.debug('Video is shorter than 16 frames');
+        increment = (length - 0.1) / framesPerVideo;
+
+        for (let i = 1; i < framesPerVideo + 1; i++) {
+            offsets.push(i * increment);
+        }
+
+        logger.debug(`Offsets: ${offsets}`);   
+    } else {
+        for (let i = 1; i < framesPerVideo + 1; i++) {
+            offsets.push(i * increment);
+        }
+        logger.debug(`Offsets: ${offsets}`);
     }
-    logger.debug(`Offsets: ${offsets}`);
+
     return offsets;
 }
 
-// checkIfFileIsProcessed('a_lasting_impression_newts_HD__p_badoinkvr__180_lr.mp4');
 processVideos();

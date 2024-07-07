@@ -30,3 +30,10 @@ build/
 *.swp
 *.swo
 *.swn
+
+# Screenshots and Previews directories
+screenshots/
+previews/
+
+# Ignore processed_files.json
+processed_files.json

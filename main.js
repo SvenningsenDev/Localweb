@@ -10,8 +10,8 @@ const { promisify } = require('util');
 const execAsync = promisify(exec);
 
 const videoDirectory = '/mnt/f';
-const screenshotOutputDirectory = '/mnt/c/git/pron/screenshots';
-const previewOutputDirectory = '/mnt/c/git/pron/previews';
+const screenshotOutputDirectory = '/mnt/c/git/LocalWeb/screenshots';
+const previewOutputDirectory = '/mnt/c/git/LocalWeb/previews';
 const framesPerVideo = 16;
 
 async function processVideos() {
